@@ -1,95 +1,78 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import plotly.graph_objects as go
 
 st.set_page_config(layout="wide")
 
-st.title("株シグナル（安定版）")
+st.title("日本株スイングスキャナー")
 
-# 銘柄入力
-ticker = st.text_input("銘柄コード（例: 7203.T）", "7203.T")
+# ===== 銘柄リスト（増やせる） =====
+tickers = {
+    "トヨタ": "7203.T",
+    "ソニー": "6758.T",
+    "三菱UFJ": "8306.T",
+    "任天堂": "7974.T",
+    "ソフトバンク": "9984.T",
+    "キーエンス": "6861.T",
+    "東京エレクトロン": "8035.T"
+}
 
-# データ取得
+# ===== データ取得 =====
 @st.cache_data(ttl=300)
 def load_data(ticker):
-    df = yf.download(ticker, period="6mo", interval="1d", progress=False)
-    return df
+    return yf.download(ticker, period="3mo", interval="1d", progress=False)
 
-df = load_data(ticker)
+# ===== シグナル判定（軽量＆確実） =====
+def get_signal(df):
+    if len(df) < 30:
+        return "なし"
 
-if df.empty:
-    st.error("データ取得失敗")
-    st.stop()
+    macd = df['Close'].ewm(span=12).mean() - df['Close'].ewm(span=26).mean()
+    signal = macd.ewm(span=9).mean()
 
-# 指標
-df['MA25'] = df['Close'].rolling(25).mean()
-df['MA75'] = df['Close'].rolling(75).mean()
+    if macd.iloc[-1] > signal.iloc[-1] and macd.iloc[-2] <= signal.iloc[-2]:
+        return "買い"
+    elif macd.iloc[-1] < signal.iloc[-1] and macd.iloc[-2] >= signal.iloc[-2]:
+        return "売り"
+    else:
+        return "なし"
 
-# MACD
-exp1 = df['Close'].ewm(span=12).mean()
-exp2 = df['Close'].ewm(span=26).mean()
-df['MACD'] = exp1 - exp2
-df['Signal'] = df['MACD'].ewm(span=9).mean()
+# ===== スキャン =====
+results = []
 
-# RSI
-delta = df['Close'].diff()
-gain = delta.clip(lower=0).rolling(14).mean()
-loss = -delta.clip(upper=0).rolling(14).mean()
-rs = gain / loss
-df['RSI'] = 100 - (100 / (1 + rs))
+for name, code in tickers.items():
+    try:
+        df = load_data(code)
+        if df.empty:
+            continue
 
-# ===== シグナル（絶対出る安定版） =====
-df['Buy'] = False
-df['Sell'] = False
+        price = df['Close'].iloc[-1]
+        change = ((df['Close'].iloc[-1] - df['Close'].iloc[-2]) / df['Close'].iloc[-2]) * 100
+        signal = get_signal(df)
 
-df.loc[
-    (df['MACD'] > df['Signal']) &
-    (df['MACD'].shift(1) <= df['Signal'].shift(1)),
-    'Buy'
-] = True
+        results.append({
+            "銘柄": name,
+            "コード": code,
+            "価格": round(price, 1),
+            "騰落率%": round(change, 2),
+            "シグナル": signal
+        })
+    except:
+        continue
 
-df.loc[
-    (df['MACD'] < df['Signal']) &
-    (df['MACD'].shift(1) >= df['Signal'].shift(1)),
-    'Sell'
-] = True
+df_result = pd.DataFrame(results)
 
-# ===== チャート =====
-fig = go.Figure()
+# ===== ランキング =====
+df_result = df_result.sort_values(by="騰落率%", ascending=False)
 
-# ローソク
-fig.add_trace(go.Candlestick(
-    x=df.index,
-    open=df['Open'],
-    high=df['High'],
-    low=df['Low'],
-    close=df['Close'],
-    name="価格"
-))
+st.subheader("ランキング（強い順）")
+st.dataframe(df_result, use_container_width=True)
 
-# MA
-fig.add_trace(go.Scatter(x=df.index, y=df['MA25'], name="MA25"))
-fig.add_trace(go.Scatter(x=df.index, y=df['MA75'], name="MA75"))
+# ===== 買い銘柄だけ =====
+st.subheader("今の買い候補")
+buy_df = df_result[df_result["シグナル"] == "買い"]
 
-# シグナル
-buy = df[df['Buy'] == True]
-sell = df[df['Sell'] == True]
-
-fig.add_trace(go.Scatter(
-    x=buy.index,
-    y=buy['Low'] * 0.98,
-    mode='markers',
-    marker=dict(size=12),
-    name="買い"
-))
-
-fig.add_trace(go.Scatter(
-    x=sell.index,
-    y=sell['High'] * 1.02,
-    mode='markers',
-    marker=dict(size=12),
-    name="売り"
-))
-
-st.plotly_chart(fig, use_container_width=True)
+if buy_df.empty:
+    st.write("なし")
+else:
+    st.dataframe(buy_df, use_container_width=True)
