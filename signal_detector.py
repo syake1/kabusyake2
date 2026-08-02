@@ -6,6 +6,41 @@ from plotly.subplots import make_subplots
 import numpy as np
 import json
 import os
+import requests
+import re
+from bs4 import BeautifulSoup
+
+@st.cache_data(ttl=3600)
+def scrape_minkabu(code):
+    info = {"target_price": "—", "analyst_trend": "—"}
+    try:
+        # ".T" などのサフィックスがあれば除去
+        code_str = str(code).split('.')[0]
+        url = f"https://minkabu.jp/stock/{code_str}"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'ja,en-US;q=0.7,en;q=0.3'
+        }
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        res = requests.get(url, headers=headers, timeout=5, verify=False)
+        res.encoding = 'utf-8'
+        if res.status_code == 200:
+            text = res.text
+            m = re.search(r'みんかぶ目標株価.*?([0-9,.]+)円', text, re.DOTALL)
+            if m:
+                info["target_price"] = m.group(1) + " 円"
+            
+            if "買い予想" in text and "売り予想" not in text:
+                info["analyst_trend"] = "🔥 買い"
+            elif "売り予想" in text and "買い予想" not in text:
+                info["analyst_trend"] = "🔻 売り"
+            else:
+                info["analyst_trend"] = "中立"
+    except Exception:
+        pass
+    return info
 
 # ファイルパスの設定
 TICKER_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tickers.json")
@@ -338,6 +373,22 @@ else:
         st.error("⚠️ **現在、「売りシグナル」が点灯しています！**")
     else:
         st.info("⏸️ 現在、新しいシグナルは出ていません。（様子見）")
+
+    # --- みんかぶ情報 & 関連リンク集 ---
+    code_only = str(ticker_symbol).split('.')[0]
+    minkabu_info = scrape_minkabu(ticker_symbol)
+    
+    with st.expander(f"📌 {ticker_name} のみんかぶ予想 ＆ 関連リンク", expanded=True):
+        col_m1, col_m2 = st.columns(2)
+        with col_m1:
+            st.markdown("##### 📊 みんかぶ予想")
+            st.write(f"**目標株価:** {minkabu_info['target_price']}")
+            st.write(f"**個人投資家予想:** {minkabu_info['analyst_trend']}")
+        with col_m2:
+            st.markdown("##### 🔗 関連リンク (IR・企業情報)")
+            st.markdown(f"- [みんなの株式（みんかぶ）で詳しく見る](https://minkabu.jp/stock/{code_only})")
+            st.markdown(f"- [JPX（日本取引所グループ）適時開示情報検索](https://www.release.tdnet.info/inbs/I_main_00.html)")
+            st.markdown(f"- [Yahoo!ファイナンスで企業情報を見る](https://finance.yahoo.co.jp/quote/{ticker_symbol}/profile)")
 
     # --- チャート作成・表示 ---
     fig = make_subplots(rows=5, cols=1, shared_xaxes=True, 
